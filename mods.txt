@@ -1,0 +1,69 @@
+# modpack-blacklist: mods.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Format:
+#
+# <modrinth-slug>  [min-mc-version]
+#
+# <modrinth-slug>   The slug from the mod's Modrinth URL.
+#                   e.g. modrinth.com/mod/ferrite-core  →  ferrite-core
+#
+# [min-mc-version]  Optional. If the pack's MC version is older than this,
+#                   the mod is skipped instead of installed. Useful for mods
+#                   that didn't exist before a certain version.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ferrite-core
+lithium
+modernfix
+entityculling
+noisium
+memoryleakfix
+sodium
+embeddium
+iris
+emi
+not-enough-animations
+continuity
+3dskinlayers
+jade
+xaeros-minimap
+xaeros-world-map
+appleskin
+visualworkbench
+sparsestructures
+oculus
+mouse-tweaks
+punchy
+minecraft-cursor
+sound-physics-remastered
+cameraoverhaul
+entitytexturefeatures
+entity-model-features
+entityculling
+presence-footsteps
+controlling
+searchables
+distanthorizons
+visuality
+visuality-forge
+comforts
+dynamiccrosshair
+particle-rain
+item-highlighter
+sophisticated-storage
+sophisticated-backpacks
+sophisticated-core
+sophisticated-storage-(unofficial-fabric-port)
+sophisticated-backpacks-(unoffical-fabric-port)
+sophisticated-core-(unofficial-fabric-port)
+sound
+particular
+overflowing-bars
+crafting-tweaks
+subtle-effects
+kleeslabs
+smooth-swapping
+camera-utils
+bridging-mod
+trade-cycling
+tiny-item-animations

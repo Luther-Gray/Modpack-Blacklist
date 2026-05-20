@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+# modpack-blacklist — Apply your personal Minecraft mod profile to a Prism Launcher instance
+#
+# Usage: modpack-blacklist [OPTIONS] <instance-name-or-path>
+#
+# Dependencies: curl, jq, rsync
+#
+# Config lives in ~/.config/modpack-blacklist/ (override with $MODPACK_BLACKLIST_DIR):
+#   mods.txt          Mods to install (slug + optional min MC version)
+#   blocklist.txt     Mod slugs to disable
+#   configs/          Config files to copy into the instance's config/ dir
+#   options-patch.txt key=value pairs merged into options.txt (keybinds, etc.)
+
+set -euo pipefail
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+PROFILE_DIR="${MODPACK_BLACKLIST_DIR:-$HOME/.config/modpack-blacklist}"
+MODS_LIST="$PROFILE_DIR/mods.txt"
+BLOCKLIST="$PROFILE_DIR/blocklist.txt"
+CONFIGS_DIR="$PROFILE_DIR/configs"
+OPTIONS_PATCH="$PROFILE_DIR/options-patch.txt"
+PRISM_DIR="${PRISM_DIR:-$HOME/.local/share/PrismLauncher/instances}"
+MODRINTH_API="https://api.modrinth.com/v2"
+UA="modpack-blacklist/1.0 (personal instance automation)"
+
+# ── Runtime state (populated by parse_instance_meta) ──────────────────────────
+INSTANCE_PATH=""
+MC_VERSION=""
+LOADER=""
+MODS_DIR=""
+OPTIONS_FILE=""
+CONFIG_DIR_INST=""
+
+# ── Flags ─────────────────────────────────────────────────────────────────────
+DRY_RUN=false
+
+# ── Terminal helpers ───────────────────────────────────────────────────────────
+bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
+yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+ok()     { printf '  \033[32m✓\033[0m  %s\n' "$*"; }
+skip()   { printf '  \033[33m⊘\033[0m  %s\n' "$*"; }
+warn()   { printf '  \033[33m⚠\033[0m  %s\n' "$*"; }
+err()    { printf '  \033[31m✗\033[0m  %s\n' "$*" >&2; }
+dry()    { printf '  \033[34m~\033[0m  [dry] %s\n' "$*"; }
+info()   { printf '  %s\n' "$*"; }
+
+# ── Usage ─────────────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+$(bold "modpack-blacklist") — Apply your personal mod profile to a Prism Launcher instance
+
+$(bold USAGE)
+  modpack-blacklist [OPTIONS] <instance>
+
+  <instance> is either an instance name (looked up inside your Prism instances
+  directory) or a full path to an instance folder. Fuzzy name matching is
+  supported — "atm9" will find "All the Mods 9".
+
+$(bold OPTIONS)
+  -n, --dry-run     Show what would happen without writing anything
+  -h, --help        Show this help
+
+$(bold CONFIG DIR)  $PROFILE_DIR
+  mods.txt          Mods to install — one per line: <slug> [min-mc-version]
+  blocklist.txt     Mod slugs to disable — one per line
+  configs/          Config files rsync'd into minecraft/config/
+  options-patch.txt key=value lines merged into minecraft/options.txt
+
+$(bold EXAMPLES)
+  modpack-blacklist "All the Mods 9"
+  modpack-blacklist --dry-run ~/Games/prism/instances/ATM9
+  modpack-blacklist -n MyNewPack
+
+$(bold ENVIRONMENT)
+  MODPACK_BLACKLIST_DIR    Override config dir (default: ~/.config/modpack-blacklist)
+  PRISM_DIR         Override Prism instances dir
+EOF
+}
+
+# ── Dependency check ───────────────────────────────────────────────────────────
+check_deps() {
+  local missing=()
+  command -v curl  &>/dev/null || missing+=(curl)
+  command -v jq    &>/dev/null || missing+=(jq)
+  command -v rsync &>/dev/null || missing+=(rsync)
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    err "Missing dependencies: ${missing[*]}"
+    err "Install with: sudo pacman -S ${missing[*]}"
+    exit 1
+  fi
+}
+
+# ── Semver: returns 0 (true) if $1 >= $2 ──────────────────────────────────────
+version_gte() {
+  [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" == "$2" ]]
+}
+
+# ── Resolve instance name/path to INSTANCE_PATH ───────────────────────────────
+resolve_instance() {
+  local input="$1"
+
+  if [[ -d "$input" ]]; then
+    INSTANCE_PATH="$(realpath "$input")"
+  elif [[ -d "$PRISM_DIR/$input" ]]; then
+    INSTANCE_PATH="$PRISM_DIR/$input"
+  else
+    # Fuzzy: find any subdir whose name contains the input (case-insensitive)
+    local match
+    match=$(find "$PRISM_DIR" -maxdepth 1 -type d -iname "*${input}*" 2>/dev/null | head -1)
+    if [[ -n "$match" ]]; then
+      INSTANCE_PATH="$match"
+    else
+      err "Instance not found: '$input'"
+      err "Looked in: $PRISM_DIR"
+      exit 1
+    fi
+  fi
+
+  info "Instance : $INSTANCE_PATH"
+}
+
+# ── Parse mmc-pack.json → MC_VERSION + LOADER ─────────────────────────────────
+parse_instance_meta() {
+  local pack_json="$INSTANCE_PATH/mmc-pack.json"
+
+  if [[ ! -f "$pack_json" ]]; then
+    err "No mmc-pack.json found — is this a valid Prism/MultiMC instance?"
+    exit 1
+  fi
+
+  MC_VERSION=$(jq -r '
+    .components[]
+    | select(.uid == "netminecraft")
+    | .cachedVersion // .version
+  ' "$pack_json")
+
+  local loader_uid
+  loader_uid=$(jq -r '
+    .components[]
+    | select(.uid | test("fabric-loader|forge|neoforge|quilt"))
+    | .uid
+  ' "$pack_json" 2>/dev/null | head -1)
+
+  case "$loader_uid" in
+    *fabric*)   LOADER="fabric"   ;;
+    *neoforge*) LOADER="neoforge" ;;
+    *forge*)    LOADER="forge"    ;;
+    *quilt*)    LOADER="quilt"    ;;
+    *)
+      warn "Loader not detected — defaulting to fabric"
+      LOADER="fabric"
+      ;;
+  esac
+
+  # Detect game directory: Fabric/vanilla = minecraft, CurseForge imports = minecraft (no dot),
+  # some packs use a custom path recorded in instance.cfg as GameDir=
+  local game_dir=""
+  if [[ -d "$INSTANCE_PATH/minecraft" ]]; then
+    game_dir="$INSTANCE_PATH/minecraft"
+  elif [[ -d "$INSTANCE_PATH/minecraft" ]]; then
+    game_dir="$INSTANCE_PATH/minecraft"
+  else
+    local custom
+    custom=$(grep "^GameDir=" "$INSTANCE_PATH/instance.cfg" 2>/dev/null | cut -d= -f2)
+    if [[ -n "$custom" && -d "$INSTANCE_PATH/$custom" ]]; then
+      game_dir="$INSTANCE_PATH/$custom"
+    else
+      game_dir="$INSTANCE_PATH/minecraft"  # last-resort fallback
+    fi
+  fi
+
+  MODS_DIR="$game_dir/mods"
+  OPTIONS_FILE="$game_dir/options.txt"
+  CONFIG_DIR_INST="$game_dir/config"
+
+  info "MC version : $MC_VERSION"
+  info "Loader     : $LOADER"
+}
+
+# ── Modrinth: fetch filename<TAB>url for a slug at the current MC/loader ───────
+modrinth_get_download() {
+  local slug="$1"
+  local response
+
+  response=$(curl -sf -G \
+    "$MODRINTH_API/project/$slug/version" \
+    --data-urlencode "game_versions=[\"$MC_VERSION\"]" \
+    --data-urlencode "loaders=[\"$LOADER\"]" \
+    -H "User-Agent: $UA" \
+    2>/dev/null) || { echo ""; return; }
+
+  # Pick the first result's primary file (fall back to first file if none flagged primary)
+  echo "$response" | jq -r '
+    .[0]
+    | if . == null then ""
+      else
+        (.files | (map(select(.primary)) | .[0]) // .[0])
+        | "\(.filename)\t\(.url)"
+      end
+  ' 2>/dev/null || echo ""
+}
+
+# ── Step 1: Install QoL mods ──────────────────────────────────────────────────
+install_mods() {
+  if [[ ! -f "$MODS_LIST" ]]; then
+    warn "mods.txt not found — skipping mod install  ($MODS_LIST)"
+    return
+  fi
+
+  bold "Installing QoL mods"
+  $DRY_RUN || mkdir -p "$MODS_DIR"
+
+  while IFS= read -r line; do
+    # Strip inline comments and trim whitespace
+    line="${line%%#*}"
+    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$line" ]] && continue
+
+    local slug min_ver=""
+    read -r slug min_ver <<< "$line"
+
+    # Version gate
+    if [[ -n "$min_ver" ]] && ! version_gte "$MC_VERSION" "$min_ver"; then
+      skip "$slug  (requires $min_ver+, pack is $MC_VERSION)"
+      continue
+    fi
+
+    # Already installed? (active, non-disabled jar whose name contains the slug)
+    local existing
+    existing=$(find "$MODS_DIR" -maxdepth 1 -iname "*${slug}*.jar" \
+      ! -name "*.disabled" 2>/dev/null | head -1)
+    if [[ -n "$existing" ]]; then
+      skip "$slug  (already present: ${existing##*/})"
+      continue
+    fi
+
+    # Fetch metadata from Modrinth
+    local result filename url
+    result=$(modrinth_get_download "$slug")
+
+    if [[ -z "$result" ]]; then
+      warn "$slug  (no release found for MC $MC_VERSION / $LOADER)"
+      continue
+    fi
+
+    filename=$(printf '%s' "$result" | cut -f1)
+    url=$(printf '%s' "$result" | cut -f2)
+
+    if $DRY_RUN; then
+      dry "$slug  → $filename"
+    else
+      curl -sf -L -o "$MODS_DIR/$filename" "$url" -H "User-Agent: $UA"
+      ok "$slug  → $filename"
+    fi
+
+  done < "$MODS_LIST"
+}
+
+# ── Step 2: Disable blocklisted mods ──────────────────────────────────────────
+apply_blocklist() {
+  if [[ ! -f "$BLOCKLIST" ]]; then
+    warn "blocklist.txt not found — skipping  ($BLOCKLIST)"
+    return
+  fi
+  if [[ ! -d "$MODS_DIR" ]]; then
+    warn "Mods directory doesn't exist yet — skipping blocklist"
+    return
+  fi
+
+  bold "Applying blocklist"
+
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$line" ]] && continue
+
+    local slug="$line"
+    local found=false
+
+    # Find all active (non-disabled) jars whose filename contains the slug
+    while IFS= read -r jarfile; do
+      found=true
+      local basename="${jarfile##*/}"
+      if $DRY_RUN; then
+        dry "Would disable: $basename"
+      else
+        mv "$jarfile" "${jarfile}.disabled"
+        ok "$slug  → ${basename}.disabled"
+      fi
+    done < <(find "$MODS_DIR" -maxdepth 1 -iname "*${slug}*.jar" \
+               ! -name "*.disabled" 2>/dev/null)
+
+    # Check if it was already disabled in a prior run
+    if ! $found; then
+      local already_disabled
+      already_disabled=$(find "$MODS_DIR" -maxdepth 1 \
+        -iname "*${slug}*.jar.disabled" 2>/dev/null | head -1)
+      if [[ -n "$already_disabled" ]]; then
+        skip "$slug  (already disabled)"
+      else
+        info "$slug  (not in this pack)"
+      fi
+    fi
+
+  done < "$BLOCKLIST"
+}
+
+# ── Step 3: Rsync config files ────────────────────────────────────────────────
+apply_configs() {
+  if [[ ! -d "$CONFIGS_DIR" ]]; then
+    warn "configs/ dir not found — skipping  ($CONFIGS_DIR)"
+    return
+  fi
+
+  bold "Applying configs"
+  mkdir -p "$CONFIG_DIR_INST"
+
+  if $DRY_RUN; then
+    rsync -rn --out-format="  $(printf '\033[34m~\033[0m') [dry] %n" \
+      "$CONFIGS_DIR/" "$CONFIG_DIR_INST/"
+  else
+    rsync -r --out-format="  $(printf '\033[32m✓\033[0m') %n" \
+      "$CONFIGS_DIR/" "$CONFIG_DIR_INST/"
+  fi
+}
+
+# ── Step 4: Patch options.txt (keybinds, video, etc.) ─────────────────────────
+apply_options_patch() {
+  if [[ ! -f "$OPTIONS_PATCH" ]]; then
+    warn "options-patch.txt not found — skipping  ($OPTIONS_PATCH)"
+    return
+  fi
+
+  bold "Patching options.txt"
+
+  # options.txt may not exist if the instance has never been launched.
+  # We create a stub so the patch can still be written; Minecraft will
+  # merge its own defaults on first launch.
+  if ! $DRY_RUN; then
+    mkdir -p "$(dirname "$OPTIONS_FILE")"
+    touch "$OPTIONS_FILE"
+  fi
+
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$line" ]] && continue
+    # Minecraft options.txt uses ':' as separator (renderDistance:12, key_key.attack:key.mouse.left)
+    [[ "$line" != *:* ]] && continue
+
+    local key="${line%%:*}"
+    local val="${line#*:}"
+
+    if $DRY_RUN; then
+      dry "$key:$val"
+      continue
+    fi
+
+    if grep -q "^${key}:" "$OPTIONS_FILE" 2>/dev/null; then
+      sed -i "s|^${key}:.*|${key}:${val}|" "$OPTIONS_FILE"
+    else
+      echo "${key}:${val}" >> "$OPTIONS_FILE"
+    fi
+    ok "$key:$val"
+
+  done < "$OPTIONS_PATCH"
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
+  local instance_arg=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n|--dry-run) DRY_RUN=true ;;
+      -h|--help)    usage; exit 0 ;;
+      -*)           err "Unknown flag: $1"; echo ""; usage; exit 1 ;;
+      *)            instance_arg="$1" ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$instance_arg" ]]; then
+    usage
+    exit 1
+  fi
+
+  check_deps
+
+  echo ""
+  bold "modpack-blacklist"
+  $DRY_RUN && yellow "  (dry run — nothing will be written)"
+  echo ""
+
+  resolve_instance "$instance_arg"
+  parse_instance_meta
+  echo ""
+
+  install_mods
+  echo ""
+  apply_blocklist
+  echo ""
+  apply_configs
+  echo ""
+  apply_options_patch
+  echo ""
+
+  if $DRY_RUN; then
+    yellow "Dry run complete. Re-run without -n to apply changes."
+  else
+    green "Done! Launch the instance and enjoy your sane setup."
+  fi
+  echo ""
+}
+
+main "$@"

@@ -1,0 +1,79 @@
+# modpack-blacklist: blocklist.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Mods to DISABLE when found in an instance.
+# Matching is case-insensitive substring on the jar filename, so you don't
+# need to know the exact version — "alexsmobs" catches "alexsmobs-1.21.1-2.3.jar"
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Blacklist ────────────────────────────────────────
+alexsmobs
+alexsdelight
+Alex's Mobs Music
+alltheleaks
+Aquamirae Mod Boss Music
+AmbientSounds
+aquamirae_bettercombat
+BadOptimizations
+bettercombat
+betterfpsdist
+biomemusic
+carryon
+chipped
+chloride
+chunkactivitytracker
+chunksending
+craftingrecipeexporter
+CraftPresence
+CrashAssistant
+crawl
+crashexploitfixer
+createbetterfps
+extragore
+fancytoasts
+fast-ip-ping
+fastpaintings
+FastSuite
+FastWorkbench
+flickerfix
+ftb-chunks
+ftbquestsfreezefix
+ftb-teams
+holdmyitems
+immersiveui
+inmisaddon
+inventoryhud
+inventoryprofilesnext
+ItemBorders
+jei
+JustEnoughResources
+JustEnoughProfessions
+JustEnoughBreeding
+justzoom
+limitedchunks
+Log-Begone
+lootjs
+lootr
+Neruina
+not_enough_glyphs
+optileaves
+performancetweaks
+realmrpg_pots_and_mimics
+RegionsUnexplored
+seriousplayeranimations
+SimpleBackups
+SimpleDiscordRichPresence
+simple-voice-chat
+smoothchunk
+sodiumdynamiclights
+sodiumoptionsapi
+sodiumoptionsmodcompat
+stardew_fishing
+terralith
+toofast
+veinmining
+WeatherRefind
+WScombat
+xaeropatreon
+yucutan_combat
+zmedievalmusic
+journeymap
