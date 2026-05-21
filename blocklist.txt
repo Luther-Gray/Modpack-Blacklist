@@ -37,7 +37,6 @@ FastWorkbench
 flickerfix
 ftb-chunks
 ftbquestsfreezefix
-ftb-teams
 holdmyitems
 immersiveui
 inmisaddon
@@ -63,6 +62,7 @@ seriousplayeranimations
 SimpleBackups
 SimpleDiscordRichPresence
 simple-voice-chat
+simple-voicechat
 smoothchunk
 sodiumdynamiclights
 sodiumoptionsapi

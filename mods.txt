@@ -26,6 +26,9 @@ not-enough-animations
 continuity
 3dskinlayers
 jade
+liteminer
+amber
+forge-config-api-port
 xaeros-minimap
 xaeros-world-map
 appleskin

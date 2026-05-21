@@ -6,16 +6,18 @@
 # Dependencies: curl, jq, rsync
 #
 # Config lives in ~/.config/modpack-blacklist/ (override with $MODPACK_BLACKLIST_DIR):
-#   mods.txt          Mods to install (slug + optional min MC version)
-#   blocklist.txt     Mod slugs to disable
-#   configs/          Config files to copy into the instance's config/ dir
-#   options-patch.txt key=value pairs merged into options.txt (keybinds, etc.)
+#   mods.txt             Mods to install (slug + optional min MC version)
+#   resourcepacks.txt    Resource packs to install (slug, one per line)
+#   blocklist.txt        Mod slugs to disable
+#   configs/             Config files to copy into the instance's config/ dir
+#   options-patch.txt    key:value pairs merged into options.txt (keybinds, etc.)
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PROFILE_DIR="${MODPACK_BLACKLIST_DIR:-$HOME/.config/modpack-blacklist}"
 MODS_LIST="$PROFILE_DIR/mods.txt"
+RESOURCE_PACKS_LIST="$PROFILE_DIR/resourcepacks.txt"
 BLOCKLIST="$PROFILE_DIR/blocklist.txt"
 CONFIGS_DIR="$PROFILE_DIR/configs"
 OPTIONS_PATCH="$PROFILE_DIR/options-patch.txt"
@@ -23,13 +25,17 @@ PRISM_DIR="${PRISM_DIR:-$HOME/.local/share/PrismLauncher/instances}"
 MODRINTH_API="https://api.modrinth.com/v2"
 UA="modpack-blacklist/1.0 (personal instance automation)"
 
-# ── Runtime state (populated by parse_instance_meta) ──────────────────────────
+# ── Runtime state ─────────────────────────────────────────────────────────────
 INSTANCE_PATH=""
 MC_VERSION=""
 LOADER=""
+GAME_DIR=""
 MODS_DIR=""
 OPTIONS_FILE=""
 CONFIG_DIR_INST=""
+
+# Tracks slugs already installed or queued this run (prevents dup dep installs)
+declare -A _QUEUED=()
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -44,6 +50,7 @@ warn()   { printf '  \033[33m⚠\033[0m  %s\n' "$*"; }
 err()    { printf '  \033[31m✗\033[0m  %s\n' "$*" >&2; }
 dry()    { printf '  \033[34m~\033[0m  [dry] %s\n' "$*"; }
 info()   { printf '  %s\n' "$*"; }
+dep()    { printf '  \033[34m↳\033[0m  dep: %s\n' "$*"; }
 
 # ── Usage ─────────────────────────────────────────────────────────────────────
 usage() {
@@ -62,10 +69,11 @@ $(bold OPTIONS)
   -h, --help        Show this help
 
 $(bold CONFIG DIR)  $PROFILE_DIR
-  mods.txt          Mods to install — one per line: <slug> [min-mc-version]
-  blocklist.txt     Mod slugs to disable — one per line
-  configs/          Config files rsync'd into minecraft/config/
-  options-patch.txt key=value lines merged into minecraft/options.txt
+  mods.txt             Mods to install — <slug> [min-mc-version]
+  resourcepacks.txt    Resource packs to install — one slug per line
+  blocklist.txt        Mod slugs to disable — one per line
+  configs/             Config files rsync'd into the game's config/ dir
+  options-patch.txt    key:value lines merged into options.txt
 
 $(bold EXAMPLES)
   modpack-blacklist "All the Mods 9"
@@ -74,7 +82,7 @@ $(bold EXAMPLES)
 
 $(bold ENVIRONMENT)
   MODPACK_BLACKLIST_DIR    Override config dir (default: ~/.config/modpack-blacklist)
-  PRISM_DIR         Override Prism instances dir
+  PRISM_DIR                Override Prism instances dir
 EOF
 }
 
@@ -105,7 +113,6 @@ resolve_instance() {
   elif [[ -d "$PRISM_DIR/$input" ]]; then
     INSTANCE_PATH="$PRISM_DIR/$input"
   else
-    # Fuzzy: find any subdir whose name contains the input (case-insensitive)
     local match
     match=$(find "$PRISM_DIR" -maxdepth 1 -type d -iname "*${input}*" 2>/dev/null | head -1)
     if [[ -n "$match" ]]; then
@@ -120,7 +127,7 @@ resolve_instance() {
   info "Instance : $INSTANCE_PATH"
 }
 
-# ── Parse mmc-pack.json → MC_VERSION + LOADER ─────────────────────────────────
+# ── Parse mmc-pack.json → MC_VERSION + LOADER + GAME_DIR ─────────────────────
 parse_instance_meta() {
   local pack_json="$INSTANCE_PATH/mmc-pack.json"
 
@@ -131,7 +138,7 @@ parse_instance_meta() {
 
   MC_VERSION=$(jq -r '
     .components[]
-    | select(.uid == "netminecraft")
+    | select(.uid == "net.minecraft")
     | .cachedVersion // .version
   ' "$pack_json")
 
@@ -153,45 +160,44 @@ parse_instance_meta() {
       ;;
   esac
 
-  # Detect game directory: Fabric/vanilla = minecraft, CurseForge imports = minecraft (no dot),
-  # some packs use a custom path recorded in instance.cfg as GameDir=
-  local game_dir=""
-  if [[ -d "$INSTANCE_PATH/minecraft" ]]; then
-    game_dir="$INSTANCE_PATH/minecraft"
+  # Detect game directory. Priority:
+  # 1. instance.cfg GameDir= (authoritative when explicitly set)
+  # 2. Whichever of minecraft/ or .minecraft/ actually has a mods/ subfolder
+  # 3. minecraft/ if it exists bare
+  # 4. .minecraft/ as last-resort (will be created on first launch)
+  local custom
+  custom=$(grep "^GameDir=" "$INSTANCE_PATH/instance.cfg" 2>/dev/null | cut -d= -f2 || true)
+  if [[ -n "$custom" && -d "$INSTANCE_PATH/$custom" ]]; then
+    GAME_DIR="$INSTANCE_PATH/$custom"
+  elif [[ -d "$INSTANCE_PATH/minecraft/mods" ]]; then
+    GAME_DIR="$INSTANCE_PATH/minecraft"
+  elif [[ -d "$INSTANCE_PATH/.minecraft/mods" ]]; then
+    GAME_DIR="$INSTANCE_PATH/.minecraft"
   elif [[ -d "$INSTANCE_PATH/minecraft" ]]; then
-    game_dir="$INSTANCE_PATH/minecraft"
+    GAME_DIR="$INSTANCE_PATH/minecraft"
   else
-    local custom
-    custom=$(grep "^GameDir=" "$INSTANCE_PATH/instance.cfg" 2>/dev/null | cut -d= -f2)
-    if [[ -n "$custom" && -d "$INSTANCE_PATH/$custom" ]]; then
-      game_dir="$INSTANCE_PATH/$custom"
-    else
-      game_dir="$INSTANCE_PATH/minecraft"  # last-resort fallback
-    fi
+    GAME_DIR="$INSTANCE_PATH/.minecraft"
   fi
 
-  MODS_DIR="$game_dir/mods"
-  OPTIONS_FILE="$game_dir/options.txt"
-  CONFIG_DIR_INST="$game_dir/config"
+  MODS_DIR="$GAME_DIR/mods"
+  OPTIONS_FILE="$GAME_DIR/options.txt"
+  CONFIG_DIR_INST="$GAME_DIR/config"
 
   info "MC version : $MC_VERSION"
   info "Loader     : $LOADER"
+  info "Game dir   : $GAME_DIR"
 }
 
-# ── Modrinth: fetch filename<TAB>url for a slug at the current MC/loader ───────
+# ── Modrinth: filename<TAB>url for a mod slug ─────────────────────────────────
 modrinth_get_download() {
   local slug="$1"
-  local response
-
-  response=$(curl -sf -G \
+  curl -sf -G \
     "$MODRINTH_API/project/$slug/version" \
     --data-urlencode "game_versions=[\"$MC_VERSION\"]" \
     --data-urlencode "loaders=[\"$LOADER\"]" \
     -H "User-Agent: $UA" \
-    2>/dev/null) || { echo ""; return; }
-
-  # Pick the first result's primary file (fall back to first file if none flagged primary)
-  echo "$response" | jq -r '
+    2>/dev/null \
+  | jq -r '
     .[0]
     | if . == null then ""
       else
@@ -201,6 +207,122 @@ modrinth_get_download() {
   ' 2>/dev/null || echo ""
 }
 
+# ── Modrinth: required dependency project IDs for a mod slug ──────────────────
+modrinth_get_required_deps() {
+  local slug="$1"
+  curl -sf -G \
+    "$MODRINTH_API/project/$slug/version" \
+    --data-urlencode "game_versions=[\"$MC_VERSION\"]" \
+    --data-urlencode "loaders=[\"$LOADER\"]" \
+    -H "User-Agent: $UA" \
+    2>/dev/null \
+  | jq -r '
+    .[0].dependencies // []
+    | map(select(.dependency_type == "required"))
+    | .[].project_id
+  ' 2>/dev/null || true
+}
+
+# ── Modrinth: project_id → slug ───────────────────────────────────────────────
+modrinth_project_slug() {
+  local project_id="$1"
+  curl -sf "$MODRINTH_API/project/$project_id" \
+    -H "User-Agent: $UA" \
+    2>/dev/null \
+  | jq -r '.slug // ""' 2>/dev/null || echo ""
+}
+
+# ── Modrinth: filename<TAB>url for a resource pack slug ───────────────────────
+# Resource packs aren't loader-specific; tries with game_version first,
+# falls back to latest if no version-matched result.
+modrinth_get_resourcepack_download() {
+  local slug="$1"
+  local result
+
+  result=$(curl -sf -G \
+    "$MODRINTH_API/project/$slug/version" \
+    --data-urlencode "game_versions=[\"$MC_VERSION\"]" \
+    -H "User-Agent: $UA" \
+    2>/dev/null \
+  | jq -r '
+    .[0]
+    | if . == null then ""
+      else (.files | (map(select(.primary)) | .[0]) // .[0]) | "\(.filename)\t\(.url)"
+      end
+  ' 2>/dev/null || echo "")
+
+  # No version-specific release — grab the latest unconditionally
+  if [[ -z "$result" ]]; then
+    result=$(curl -sf \
+      "$MODRINTH_API/project/$slug/version" \
+      -H "User-Agent: $UA" \
+      2>/dev/null \
+    | jq -r '
+      .[0]
+      | if . == null then ""
+        else (.files | (map(select(.primary)) | .[0]) // .[0]) | "\(.filename)\t\(.url)"
+        end
+    ' 2>/dev/null || echo "")
+  fi
+
+  echo "$result"
+}
+
+# ── Install a single mod + its required deps (recursive, cycle-safe) ───────────
+install_single_mod() {
+  local slug="$1"
+  local is_dep="${2:-false}"
+
+  # Already handled this slug this run — skip
+  if [[ -n "${_QUEUED[$slug]+x}" ]]; then
+    return
+  fi
+  _QUEUED[$slug]=1
+
+  local label="$slug"
+  $is_dep && label="$slug  [dep]"
+
+  # Already on disk?
+  local existing
+  existing=$(find "$MODS_DIR" -maxdepth 1 -iname "*${slug}*.jar" \
+    ! -name "*.disabled" 2>/dev/null | head -1)
+  if [[ -n "$existing" ]]; then
+    skip "$label  (already present: ${existing##*/})"
+    return
+  fi
+
+  # Fetch from Modrinth
+  local result filename url
+  result=$(modrinth_get_download "$slug")
+
+  if [[ -z "$result" ]]; then
+    warn "$label  (no release found for MC $MC_VERSION / $LOADER)"
+    return
+  fi
+
+  filename=$(printf '%s' "$result" | cut -f1)
+  url=$(printf '%s' "$result" | cut -f2)
+
+  if $DRY_RUN; then
+    $is_dep && dep "$slug  → $filename" || dry "$slug  → $filename"
+  else
+    curl -sf -L -o "$MODS_DIR/$filename" "$url" -H "User-Agent: $UA"
+    $is_dep && dep "$slug  → $filename" || ok "$slug  → $filename"
+  fi
+
+  # Resolve and install required dependencies (only one level from explicit mods,
+  # but deps can pull their own deps since cycles are guarded by _QUEUED)
+  if ! $is_dep; then
+    local dep_id dep_slug
+    while IFS= read -r dep_id; do
+      [[ -z "$dep_id" ]] && continue
+      dep_slug=$(modrinth_project_slug "$dep_id")
+      [[ -z "$dep_slug" ]] && continue
+      install_single_mod "$dep_slug" true
+    done < <(modrinth_get_required_deps "$slug")
+  fi
+}
+
 # ── Step 1: Install QoL mods ──────────────────────────────────────────────────
 install_mods() {
   if [[ ! -f "$MODS_LIST" ]]; then
@@ -208,11 +330,10 @@ install_mods() {
     return
   fi
 
-  bold "Installing QoL mods"
+  bold "Installing mods"
   $DRY_RUN || mkdir -p "$MODS_DIR"
 
   while IFS= read -r line; do
-    # Strip inline comments and trim whitespace
     line="${line%%#*}"
     line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "$line" ]] && continue
@@ -220,27 +341,48 @@ install_mods() {
     local slug min_ver=""
     read -r slug min_ver <<< "$line"
 
-    # Version gate
     if [[ -n "$min_ver" ]] && ! version_gte "$MC_VERSION" "$min_ver"; then
       skip "$slug  (requires $min_ver+, pack is $MC_VERSION)"
       continue
     fi
 
-    # Already installed? (active, non-disabled jar whose name contains the slug)
+    install_single_mod "$slug" false
+
+  done < "$MODS_LIST"
+}
+
+# ── Step 2: Install resource packs ────────────────────────────────────────────
+install_resourcepacks() {
+  if [[ ! -f "$RESOURCE_PACKS_LIST" ]]; then
+    warn "resourcepacks.txt not found — skipping  ($RESOURCE_PACKS_LIST)"
+    return
+  fi
+
+  bold "Installing resource packs"
+  local rp_dir="$GAME_DIR/resourcepacks"
+  $DRY_RUN || mkdir -p "$rp_dir"
+
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$line" ]] && continue
+
+    local slug="$line"
+
+    # Already present?
     local existing
-    existing=$(find "$MODS_DIR" -maxdepth 1 -iname "*${slug}*.jar" \
-      ! -name "*.disabled" 2>/dev/null | head -1)
+    existing=$(find "$rp_dir" -maxdepth 1 \
+      \( -iname "*${slug}*" \) 2>/dev/null | head -1)
     if [[ -n "$existing" ]]; then
       skip "$slug  (already present: ${existing##*/})"
       continue
     fi
 
-    # Fetch metadata from Modrinth
     local result filename url
-    result=$(modrinth_get_download "$slug")
+    result=$(modrinth_get_resourcepack_download "$slug")
 
     if [[ -z "$result" ]]; then
-      warn "$slug  (no release found for MC $MC_VERSION / $LOADER)"
+      warn "$slug  (not found on Modrinth)"
       continue
     fi
 
@@ -250,14 +392,14 @@ install_mods() {
     if $DRY_RUN; then
       dry "$slug  → $filename"
     else
-      curl -sf -L -o "$MODS_DIR/$filename" "$url" -H "User-Agent: $UA"
+      curl -sf -L -o "$rp_dir/$filename" "$url" -H "User-Agent: $UA"
       ok "$slug  → $filename"
     fi
 
-  done < "$MODS_LIST"
+  done < "$RESOURCE_PACKS_LIST"
 }
 
-# ── Step 2: Disable blocklisted mods ──────────────────────────────────────────
+# ── Step 3: Disable blocklisted mods ──────────────────────────────────────────
 apply_blocklist() {
   if [[ ! -f "$BLOCKLIST" ]]; then
     warn "blocklist.txt not found — skipping  ($BLOCKLIST)"
@@ -278,7 +420,6 @@ apply_blocklist() {
     local slug="$line"
     local found=false
 
-    # Find all active (non-disabled) jars whose filename contains the slug
     while IFS= read -r jarfile; do
       found=true
       local basename="${jarfile##*/}"
@@ -291,7 +432,6 @@ apply_blocklist() {
     done < <(find "$MODS_DIR" -maxdepth 1 -iname "*${slug}*.jar" \
                ! -name "*.disabled" 2>/dev/null)
 
-    # Check if it was already disabled in a prior run
     if ! $found; then
       local already_disabled
       already_disabled=$(find "$MODS_DIR" -maxdepth 1 \
@@ -306,7 +446,7 @@ apply_blocklist() {
   done < "$BLOCKLIST"
 }
 
-# ── Step 3: Rsync config files ────────────────────────────────────────────────
+# ── Step 4: Rsync config files ────────────────────────────────────────────────
 apply_configs() {
   if [[ ! -d "$CONFIGS_DIR" ]]; then
     warn "configs/ dir not found — skipping  ($CONFIGS_DIR)"
@@ -314,7 +454,7 @@ apply_configs() {
   fi
 
   bold "Applying configs"
-  mkdir -p "$CONFIG_DIR_INST"
+  $DRY_RUN || mkdir -p "$CONFIG_DIR_INST"
 
   if $DRY_RUN; then
     rsync -rn --out-format="  $(printf '\033[34m~\033[0m') [dry] %n" \
@@ -325,7 +465,7 @@ apply_configs() {
   fi
 }
 
-# ── Step 4: Patch options.txt (keybinds, video, etc.) ─────────────────────────
+# ── Step 5: Patch options.txt (keybinds, video, etc.) ─────────────────────────
 apply_options_patch() {
   if [[ ! -f "$OPTIONS_PATCH" ]]; then
     warn "options-patch.txt not found — skipping  ($OPTIONS_PATCH)"
@@ -334,9 +474,6 @@ apply_options_patch() {
 
   bold "Patching options.txt"
 
-  # options.txt may not exist if the instance has never been launched.
-  # We create a stub so the patch can still be written; Minecraft will
-  # merge its own defaults on first launch.
   if ! $DRY_RUN; then
     mkdir -p "$(dirname "$OPTIONS_FILE")"
     touch "$OPTIONS_FILE"
@@ -346,7 +483,6 @@ apply_options_patch() {
     line="${line%%#*}"
     line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "$line" ]] && continue
-    # Minecraft options.txt uses ':' as separator (renderDistance:12, key_key.attack:key.mouse.left)
     [[ "$line" != *:* ]] && continue
 
     local key="${line%%:*}"
@@ -381,10 +517,7 @@ main() {
     shift
   done
 
-  if [[ -z "$instance_arg" ]]; then
-    usage
-    exit 1
-  fi
+  [[ -z "$instance_arg" ]] && { usage; exit 1; }
 
   check_deps
 
@@ -398,6 +531,8 @@ main() {
   echo ""
 
   install_mods
+  echo ""
+  install_resourcepacks
   echo ""
   apply_blocklist
   echo ""

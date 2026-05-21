@@ -1,0 +1,13 @@
+# modpack-blacklist: resourcepacks.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Resource packs to install into every instance.
+# One Modrinth slug per line. The slug is the last part of the pack's URL:
+#   modrinth.com/resourcepack/fresh-animations  →  fresh-animations
+# ─────────────────────────────────────────────────────────────────────────────
+
+fresh-animations
+fresh-animations-extensions
+fa-player-extension
+ctm-overhaul-forked
+cubic-sun-moon
+cubic-leaves
