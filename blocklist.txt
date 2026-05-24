@@ -17,6 +17,7 @@ BadOptimizations
 bettercombat
 betterfpsdist
 biomemusic
+BHMenu
 carryon
 chipped
 chloride
@@ -28,9 +29,14 @@ CrashAssistant
 crawl
 crashexploitfixer
 createbetterfps
+does_it_tick
+jmi
+essential
 extragore
+EuphoriaPatcher
 fancytoasts
 fast-ip-ping
+fastload
 fastpaintings
 FastSuite
 FastWorkbench
@@ -47,16 +53,18 @@ jei
 JustEnoughResources
 JustEnoughProfessions
 JustEnoughBreeding
+JustEnoughArchaeology
+JustEnoughEffectsDescriptions
 justzoom
 limitedchunks
 Log-Begone
-lootjs
 lootr
 Neruina
 not_enough_glyphs
 optileaves
 performancetweaks
 realmrpg_pots_and_mimics
+realmrpg_dragon_wyrms
 RegionsUnexplored
 seriousplayeranimations
 SimpleBackups
@@ -67,6 +75,7 @@ smoothchunk
 sodiumdynamiclights
 sodiumoptionsapi
 sodiumoptionsmodcompat
+spark
 stardew_fishing
 terralith
 toofast
@@ -77,3 +86,6 @@ xaeropatreon
 yucutan_combat
 zmedievalmusic
 journeymap
+waves
+watut
+whats-that-slot

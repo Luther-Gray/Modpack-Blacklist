@@ -36,7 +36,9 @@ visualworkbench
 sparsestructures
 oculus
 mouse-tweaks
-punchy
+punchy-fpa
+windy
+visual-workbench
 minecraft-cursor
 sound-physics-remastered
 cameraoverhaul
@@ -59,7 +61,8 @@ sophisticated-core
 sophisticated-storage-(unofficial-fabric-port)
 sophisticated-backpacks-(unoffical-fabric-port)
 sophisticated-core-(unofficial-fabric-port)
-sound
+sounds
+clientsort
 particular
 overflowing-bars
 crafting-tweaks
