@@ -21,7 +21,6 @@ memoryleakfix
 sodium
 embeddium
 iris
-emi
 not-enough-animations
 continuity
 3dskinlayers

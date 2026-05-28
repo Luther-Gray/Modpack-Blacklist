@@ -15,6 +15,7 @@ AmbientSounds
 aquamirae_bettercombat
 BadOptimizations
 bettercombat
+betterthirdperson
 betterfpsdist
 biomemusic
 BHMenu
@@ -44,17 +45,13 @@ flickerfix
 ftb-chunks
 ftbquestsfreezefix
 holdmyitems
+horror_element
 immersiveui
 inmisaddon
 inventoryhud
 inventoryprofilesnext
+invtweaks
 ItemBorders
-jei
-JustEnoughResources
-JustEnoughProfessions
-JustEnoughBreeding
-JustEnoughArchaeology
-JustEnoughEffectsDescriptions
 justzoom
 limitedchunks
 Log-Begone
@@ -76,6 +73,7 @@ sodiumdynamiclights
 sodiumoptionsapi
 sodiumoptionsmodcompat
 spark
+spore
 stardew_fishing
 terralith
 toofast
