@@ -6,16 +6,20 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Blacklist ────────────────────────────────────────
+AdvancedBackups
 alexsmobs
 alexsdelight
 Alex's Mobs Music
 alltheleaks
+armorpointspp
 Aquamirae Mod Boss Music
 AmbientSounds
 aquamirae_bettercombat
 BadOptimizations
+bc_nbt_fix
 bettercombat
 betterthirdperson
+bettermobcombat
 betterfpsdist
 biomemusic
 BHMenu
@@ -35,6 +39,7 @@ jmi
 essential
 extragore
 EuphoriaPatcher
+everycompat
 fancytoasts
 fast-ip-ping
 fastload
@@ -47,6 +52,8 @@ ftbquestsfreezefix
 holdmyitems
 horror_element
 immersiveui
+immersivelanterns
+immersiveoverlays
 inmisaddon
 inventoryhud
 inventoryprofilesnext
@@ -56,18 +63,24 @@ justzoom
 limitedchunks
 Log-Begone
 lootr
+lootr_liason
 Neruina
 not_enough_glyphs
 optileaves
 performancetweaks
 realmrpg_pots_and_mimics
 realmrpg_dragon_wyrms
+terralith
 RegionsUnexplored
+Rats
+ssrcamerafixes
 seriousplayeranimations
 SimpleBackups
 SimpleDiscordRichPresence
 simple-voice-chat
 simple-voicechat
+ShoulderSurfing
+sanitydim
 smoothchunk
 sodiumdynamiclights
 sodiumoptionsapi
@@ -75,15 +88,21 @@ sodiumoptionsmodcompat
 spark
 spore
 stardew_fishing
+The_Graveyard
 terralith
 toofast
+vintage_animations
+visualhealth
 veinmining
 WeatherRefind
+worldhost
 WScombat
 xaeropatreon
+xaeroplus
 yucutan_combat
 zmedievalmusic
 journeymap
 waves
+wakes
 watut
 whats-that-slot
